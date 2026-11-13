@@ -1,0 +1,50 @@
+
+name: Extract Android Project
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract ZIP
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          import shutil
+
+          archive = Path("DaftarchehPhone-Android-Project.zip")
+          temp = Path("/tmp/phonebook")
+          temp.mkdir(exist_ok=True)
+
+          with ZipFile(archive) as z:
+              z.extractall(temp)
+
+          items = list(temp.iterdir())
+          source = items[0] if len(items) == 1 and items[0].is_dir() else temp
+
+          for item in source.iterdir():
+              if item.name == ".github":
+                  continue
+              target = Path(item.name)
+              if item.is_dir():
+                  shutil.copytree(item, target, dirs_exist_ok=True)
+              else:
+                  shutil.copy2(item, target)
+          PY
+
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Extract Android project files" || echo "No changes"
+          git push
