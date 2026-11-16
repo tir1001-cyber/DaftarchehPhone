@@ -637,6 +637,7 @@ private fun PhonebookApp() {
             dismissButton = {
                 TextButton(onClick = {
                     pendingImportText = null
+                    pendingImportContacts = null
                     showImportConfirmation = false
                 }) {
                     Text("انصراف")
