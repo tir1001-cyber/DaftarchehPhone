@@ -27,16 +27,15 @@ private fun Cursor.intValue(column: String, fallback: Int = 0): Int {
 }
 
 fun findAvailableSimTargets(context: Context): List<SimTarget> {
-    val ef = SimPhonebookContract.ElementaryFiles
     val result = mutableListOf<SimTarget>()
     val cursor = context.contentResolver.query(
-        ef.CONTENT_URI,
+        SimPhonebookContract.ElementaryFiles.CONTENT_URI,
         arrayOf(
-            ef.SUBSCRIPTION_ID,
-            ef.EF_TYPE,
-            ef.SLOT_INDEX,
-            ef.MAX_RECORDS,
-            ef.RECORD_COUNT
+            SimPhonebookContract.ElementaryFiles.SUBSCRIPTION_ID,
+            SimPhonebookContract.ElementaryFiles.EF_TYPE,
+            SimPhonebookContract.ElementaryFiles.SLOT_INDEX,
+            SimPhonebookContract.ElementaryFiles.MAX_RECORDS,
+            SimPhonebookContract.ElementaryFiles.RECORD_COUNT
         ),
         null,
         null,
@@ -45,7 +44,7 @@ fun findAvailableSimTargets(context: Context): List<SimTarget> {
 
     cursor.use {
         while (it.moveToNext()) {
-            if (it.intValue(ef.EF_TYPE, -1) != ef.EF_ADN) continue
+            if (it.intValue(ef.EF_TYPE, -1) != SimPhonebookContract.ElementaryFiles.EF_ADN) continue
             val subId = it.intValue(ef.SUBSCRIPTION_ID, -1)
             if (subId < 0) continue
             result.add(
