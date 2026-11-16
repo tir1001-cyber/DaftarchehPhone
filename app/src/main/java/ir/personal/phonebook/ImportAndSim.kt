@@ -82,7 +82,7 @@ fun writeContactsToSim(
             failed++
         } else {
             try {
-                val phone = normalizePhone(rawPhone)
+                val phone = normalizePhoneForTransfer(rawPhone)
                 if (phone.isBlank()) throw IllegalArgumentException("شماره نامعتبر")
                 val values = ContentValues().apply {
                     put(SimPhonebookContract.SimRecords.PHONE_NUMBER, phone)
@@ -154,7 +154,7 @@ fun parseXlsx(bytes: ByteArray): List<Contact> {
     return grouped.map { (name, phones) ->
         Contact(
             name = name,
-            phones = phones.distinctBy { normalizePhone(it) }
+            phones = phones.distinctBy { normalizePhoneForTransfer(it) }
         )
     }
 }
@@ -288,4 +288,17 @@ private fun columnIndex(reference: String): Int {
         result = result * 26 + (char - 'A' + 1)
     }
     return result - 1
+}
+
+private fun normalizePhoneForTransfer(value: String): String {
+    val digits = value
+        .replace('۰', '0').replace('۱', '1').replace('۲', '2')
+        .replace('۳', '3').replace('۴', '4').replace('۵', '5')
+        .replace('۶', '6').replace('۷', '7').replace('۸', '8')
+        .replace('۹', '9')
+        .replace('٠', '0').replace('١', '1').replace('٢', '2')
+        .replace('٣', '3').replace('٤', '4').replace('٥', '5')
+        .replace('٦', '6').replace('٧', '7').replace('٨', '8')
+        .replace('٩', '9')
+    return digits.filter { it.isDigit() || it == '+' }
 }
