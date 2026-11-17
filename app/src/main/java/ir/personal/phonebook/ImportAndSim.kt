@@ -44,15 +44,15 @@ fun findAvailableSimTargets(context: Context): List<SimTarget> {
 
     cursor.use {
         while (it.moveToNext()) {
-            if (it.intValue(ef.EF_TYPE, -1) != SimPhonebookContract.ElementaryFiles.EF_ADN) continue
-            val subId = it.intValue(ef.SUBSCRIPTION_ID, -1)
+            if (it.intValue(SimPhonebookContract.ElementaryFiles.EF_TYPE, -1) != SimPhonebookContract.ElementaryFiles.EF_ADN) continue
+            val subId = it.intValue(SimPhonebookContract.ElementaryFiles.SUBSCRIPTION_ID, -1)
             if (subId < 0) continue
             result.add(
                 SimTarget(
                     subscriptionId = subId,
-                    slotIndex = it.intValue(ef.SLOT_INDEX, result.size),
-                    maxRecords = it.intValue(ef.MAX_RECORDS),
-                    recordCount = it.intValue(ef.RECORD_COUNT)
+                    slotIndex = it.intValue(SimPhonebookContract.ElementaryFiles.SLOT_INDEX, result.size),
+                    maxRecords = it.intValue(SimPhonebookContract.ElementaryFiles.MAX_RECORDS),
+                    recordCount = it.intValue(SimPhonebookContract.ElementaryFiles.RECORD_COUNT)
                 )
             )
         }
