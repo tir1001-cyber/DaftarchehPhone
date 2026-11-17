@@ -1,7 +1,9 @@
 
 package ir.personal.phonebook
 
+import android.Manifest
 import android.content.Intent
+import android.provider.SimPhonebookContract
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -126,8 +128,12 @@ private fun PhonebookApp() {
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showPermanentDeleteConfirmation by remember { mutableStateOf(false) }
     var showImportConfirmation by remember { mutableStateOf(false) }
-
     var pendingImportText by remember { mutableStateOf<String?>(null) }
+    var pendingImportContacts by remember { mutableStateOf<List<Contact>?>(null) }
+    var showSimConfirmation by remember { mutableStateOf(false) }
+    var showSimChooser by remember { mutableStateOf(false) }
+    var simTargets by remember { mutableStateOf<List<SimTarget>>(emptyList()) }
+
     var message by remember { mutableStateOf("") }
     var saveError by remember { mutableStateOf("") }
 
@@ -167,20 +173,52 @@ private fun PhonebookApp() {
         }
     }
 
+    val simPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants[Manifest.permission.READ_CONTACTS] == true &&
+            grants[Manifest.permission.WRITE_CONTACTS] == true
+        ) {
+            try {
+                simTargets = findAvailableSimTargets(context)
+                if (simTargets.isEmpty()) {
+                    message = "سیم‌کارت قابل نوشتن پیدا نشد یا گوشی انتقال مستقیم را پشتیبانی نمی‌کند. خروجی VCF هم در دسترس است."
+                } else {
+                    showSimChooser = true
+                }
+            } catch (e: Exception) {
+                message = "خواندن اطلاعات سیم‌کارت ممکن نشد. خروجی VCF همچنان در دسترس است."
+            }
+        } else {
+            message = "برای انتقال به سیم‌کارت، اجازه دسترسی مخاطبین لازم است."
+        }
+    }
+
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
             try {
-                val text = context.contentResolver.openInputStream(uri)
-                    ?.bufferedReader(Charsets.UTF_8)
-                    ?.use { it.readText() }
-                    ?: throw IllegalStateException("فایل قابل خواندن نیست")
-
-                pendingImportText = text
+                val mime = context.contentResolver.getType(uri).orEmpty()
+                val isXlsx = mime.contains("spreadsheet", ignoreCase = true) ||
+                    uri.toString().substringBefore("?").endsWith(".xlsx", ignoreCase = true)
+                if (isXlsx) {
+                    val bytes = context.contentResolver.openInputStream(uri)
+                        ?.use { it.readBytes() }
+                        ?: throw IllegalStateException("فایل قابل خواندن نیست")
+                    pendingImportContacts = parseXlsx(bytes)
+                    pendingImportText = null
+                } else {
+                    val text = context.contentResolver.openInputStream(uri)
+                        ?.bufferedReader(Charsets.UTF_8)
+                        ?.use { it.readText() }
+                        ?: throw IllegalStateException("فایل قابل خواندن نیست")
+                    pendingImportText = text
+                    pendingImportContacts = null
+                }
                 showImportConfirmation = true
             } catch (e: Exception) {
-                message = "خطا در خواندن فایل: ${e.message}"
+                message = "خطا در خواندن فایل: " + e.message
             }
         }
     }
@@ -373,6 +411,12 @@ private fun PhonebookApp() {
                 }
             )
 
+            if (!showTrash && selectedIds.isNotEmpty()) {
+                OutlinedButton(onClick = { showSimConfirmation = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("انتقال مخاطبین انتخاب‌شده به سیم‌کارت")
+                }
+            }
+
             HorizontalDivider()
 
             if (visibleContacts.isEmpty()) {
@@ -554,11 +598,12 @@ private fun PhonebookApp() {
         )
     }
 
-    if (showImportConfirmation && pendingImportText != null) {
+    if (showImportConfirmation && (pendingImportText != null || pendingImportContacts != null)) {
         AlertDialog(
             onDismissRequest = {
                 showImportConfirmation = false
                 pendingImportText = null
+                pendingImportContacts = null
             },
             title = { Text("ورود اطلاعات") },
             text = {
@@ -570,7 +615,7 @@ private fun PhonebookApp() {
             confirmButton = {
                 TextButton(onClick = {
                     try {
-                        val imported = importContacts(pendingImportText!!)
+                        val imported = pendingImportContacts ?: importContacts(pendingImportText!!)
                         data = data.copy(
                             contacts = mergeImportedContacts(
                                 data.contacts,
@@ -583,6 +628,7 @@ private fun PhonebookApp() {
                     }
 
                     pendingImportText = null
+                    pendingImportContacts = null
                     showImportConfirmation = false
                 }) {
                     Text("ورود اطلاعات")
@@ -591,6 +637,7 @@ private fun PhonebookApp() {
             dismissButton = {
                 TextButton(onClick = {
                     pendingImportText = null
+                    pendingImportContacts = null
                     showImportConfirmation = false
                 }) {
                     Text("انصراف")
@@ -598,6 +645,68 @@ private fun PhonebookApp() {
             }
         )
     }
+
+    if (showSimConfirmation) {
+        val selectedContacts = data.contacts.filter { it.id in selectedIds }
+        val selectedPhoneCount = selectedContacts.sumOf { it.phones.size }
+        AlertDialog(
+            onDismissRequest = { showSimConfirmation = false },
+            title = { Text("انتقال به سیم‌کارت") },
+            text = {
+                Text("قرار است " + selectedContacts.size + " مخاطب و " + selectedPhoneCount + " شماره تلفن از موارد انتخاب‌شده به سیم‌کارت کپی شود. اطلاعات فعلی سیم‌کارت حذف نمی‌شود. ادامه می‌دهی؟")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSimConfirmation = false
+                    simPermissionLauncher.launch(arrayOf(
+                        Manifest.permission.READ_CONTACTS,
+                        Manifest.permission.WRITE_CONTACTS
+                    ))
+                }) { Text("ادامه") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSimConfirmation = false }) { Text("انصراف") }
+            }
+        )
+    }
+
+    if (showSimChooser) {
+        AlertDialog(
+            onDismissRequest = { showSimChooser = false },
+            title = { Text("انتخاب سیم‌کارت") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("سیم‌کارت مقصد را انتخاب کن. ظرفیت آزاد هر سیم‌کارت نمایش داده شده است.")
+                    simTargets.forEach { target ->
+                        val free = (target.maxRecords - target.recordCount).coerceAtLeast(0)
+                        TextButton(
+                            onClick = {
+                                showSimChooser = false
+                                try {
+                                    val contactsToCopy = data.contacts.filter { it.id in selectedIds }
+                                    val result = writeContactsToSim(context, contactsToCopy, target)
+                                    message = "انتقال به سیم‌کارت " + (target.slotIndex + 1) + " انجام شد: " + result.successCount + " شماره موفق، " + result.failedCount + " ناموفق."
+                                    if (result.failedCount > 0) {
+                                        message += " ممکن است ظرفیت یا محدودیت نام/شماره مانع بعضی موارد شده باشد."
+                                    }
+                                    selectedIds = emptySet()
+                                } catch (e: Exception) {
+                                    message = "انتقال انجام نشد: " + (e.message ?: "خطای سیم‌کارت") + ". خروجی VCF راه جایگزین است."
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("سیم‌کارت " + (target.slotIndex + 1) + " — ظرفیت آزاد: " + free + " از " + target.maxRecords)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSimChooser = false }) { Text("بستن") }
+            }
+        )
+    }
+
 }
 
 // ------------------------------------------------------------
