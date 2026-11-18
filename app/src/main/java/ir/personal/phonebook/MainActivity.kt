@@ -1,6 +1,7 @@
 
 package ir.personal.phonebook
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -30,6 +31,11 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+import java.util.Locale
+import java.text.Collator
+import java.io.OutputStream
 import java.util.UUID
 
 @Serializable
@@ -324,7 +330,30 @@ fun PhonebookApp() {
     var editingContact by remember { mutableStateOf<Contact?>(null) }
     var showMergeConfirm by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
-    var showSimInfo by remember { mutableStateOf(false) }
+    var showSimConfirmation by remember { mutableStateOf(false) }
+    var showSimChooser by remember { mutableStateOf(false) }
+    var simTargets by remember { mutableStateOf<List<SimTarget>>(emptyList()) }
+
+    val simPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants[Manifest.permission.READ_CONTACTS] == true &&
+            grants[Manifest.permission.WRITE_CONTACTS] == true
+        ) {
+            try {
+                simTargets = findAvailableSimTargets(context)
+                if (simTargets.isEmpty()) {
+                    message = "سیم‌کارت قابل نوشتن پیدا نشد یا گوشی انتقال مستقیم را پشتیبانی نمی‌کند. خروجی VCF هم در دسترس است."
+                } else {
+                    showSimChooser = true
+                }
+            } catch (e: Exception) {
+                message = "خواندن اطلاعات سیم‌کارت ممکن نشد. خروجی VCF همچنان در دسترس است."
+            }
+        } else {
+            message = "برای انتقال به سیم‌کارت، اجازه دسترسی مخاطبین لازم است."
+        }
+    }
 
     fun save(next: PhonebookData) {
         if (storageError != null) {
@@ -444,12 +473,30 @@ fun PhonebookApp() {
         }
     }
 
+    val xlsxExport = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { output ->
+                    writeXlsx(output, sortContactsAlphabetically(data.contacts))
+                } ?: error("فایل خروجی باز نشد.")
+            }.onSuccess {
+                message = "فایل Excel با فرمت XLSX ذخیره شد."
+            }.onFailure {
+                message = "خطا در ساخت فایل XLSX: " + (it.message ?: "نامشخص")
+            }
+        }
+    }
+
     val allItems = if (showTrash) data.trash else data.contacts
 
-    val visible = allItems.filter {
+    val visible = sortContactsAlphabetically(allItems.filter {
         it.name.contains(search, ignoreCase = true) ||
             it.phones.any { phone -> phone.contains(search) }
-    }
+    })
 
     val colors = lightColorScheme(
         primary = Color(0xFF8863B5),
@@ -571,9 +618,10 @@ fun PhonebookApp() {
                         }
 
                         OutlinedButton(onClick = {
-                            showSimInfo = true
+                            if (selected.isNotEmpty()) showSimConfirmation = true
+                            else message = "ابتدا مخاطبین موردنظر را انتخاب کنید."
                         }) {
-                            Text("سیم‌کارت")
+                            Text("انتقال به سیم‌کارت")
                         }
                     } else {
                         OutlinedButton(onClick = {
@@ -810,6 +858,16 @@ fun PhonebookApp() {
                     ) {
                         Text("CSV سازگار با Excel")
                     }
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            showExport = false
+                            xlsxExport.launch("phonebook-contacts.xlsx")
+                        }
+                    ) {
+                        Text("خروجی Excel (XLSX)")
+                    }
                 }
             },
             confirmButton = {
@@ -822,29 +880,69 @@ fun PhonebookApp() {
         )
     }
 
-    if (showSimInfo) {
+    if (showSimConfirmation) {
+        val selectedContacts = data.contacts.filter { it.id in selected }
+        val selectedPhoneCount = selectedContacts.sumOf { it.phones.size }
         AlertDialog(
-            onDismissRequest = { showSimInfo = false },
-            title = { Text("انتقال مخاطبین به سیم‌کارت") },
-            text = {
-                Text(
-                    "دسترسی مستقیم به سیم‌کارت در نسخه‌های جدید اندروید محدود است. " +
-                        "برای انتقال، ابتدا از مخاطبین خروجی VCF بگیر و سپس فایل را " +
-                        "با برنامه مخاطبین گوشی باز کن. اگر گوشی امکان ذخیره روی سیم‌کارت " +
-                        "را ارائه دهد، می‌توانی آن گزینه را انتخاب کنی."
-                )
-            },
+            onDismissRequest = { showSimConfirmation = false },
+            title = { Text("انتقال به سیم‌کارت") },
+            text = { Text("قرار است " + selectedContacts.size + " مخاطب و " + selectedPhoneCount + " شماره تلفن از موارد انتخاب‌شده به سیم‌کارت کپی شود. اطلاعات فعلی سیم‌کارت حذف نمی‌شود. ادامه می‌دهی؟") },
             confirmButton = {
                 TextButton(onClick = {
-                    showSimInfo = false
-                }) {
-                    Text("متوجه شدم")
+                    showSimConfirmation = false
+                    simPermissionLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS))
+                }) { Text("ادامه") }
+            },
+            dismissButton = { TextButton(onClick = { showSimConfirmation = false }) { Text("انصراف") } }
+        )
+    }
+
+    if (showSimChooser) {
+        AlertDialog(
+            onDismissRequest = { showSimChooser = false },
+            title = { Text("انتخاب سیم‌کارت") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("سیم‌کارت مقصد را انتخاب کن. ظرفیت آزاد هر سیم‌کارت نمایش داده شده است.")
+                    simTargets.forEach { target ->
+                        val free = (target.maxRecords - target.recordCount).coerceAtLeast(0)
+                        TextButton(
+                            onClick = {
+                                showSimChooser = false
+                                try {
+                                    val contactsToCopy = data.contacts.filter { it.id in selected }
+                                    val result = writeContactsToSim(context, contactsToCopy, target)
+                                    message = "انتقال به سیم‌کارت " + (target.slotIndex + 1) + " انجام شد: " + result.successCount + " شماره موفق، " + result.failedCount + " ناموفق."
+                                    if (result.failedCount > 0) message += " ممکن است ظرفیت یا محدودیت نام/شماره مانع بعضی موارد شده باشد."
+                                    selected = emptySet()
+                                } catch (e: Exception) {
+                                    message = "انتقال انجام نشد: " + (e.message ?: "خطای سیم‌کارت") + ". خروجی VCF راه جایگزین است."
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("سیم‌کارت " + (target.slotIndex + 1) + " — ظرفیت آزاد: " + free + " از " + target.maxRecords) }
+                    }
                 }
-            }
+            },
+            confirmButton = { TextButton(onClick = { showSimChooser = false }) { Text("بستن") } }
         )
     }
 }
 
+private fun sortContactsAlphabetically(contacts: List<Contact>): List<Contact> {
+    val collator = Collator.getInstance(Locale("fa")).apply {
+        strength = Collator.PRIMARY
+        decomposition = Collator.CANONICAL_DECOMPOSITION
+    }
+    fun normalized(name: String): String = name.trim().replace('ي', 'ی').replace('ك', 'ک')
+    return contacts.sortedWith(Comparator { first, second ->
+        val left = normalized(first.name)
+        val right = normalized(second.name)
+        val result = collator.compare(left, right)
+        if (result != 0) result
+        else left.lowercase(Locale.ROOT).compareTo(right.lowercase(Locale.ROOT))
+    })
+}
 @Composable
 private fun ContactCard(
     contact: Contact,
@@ -985,4 +1083,143 @@ private fun ContactEditorDialog(
             }
         }
     )
+}
+
+private fun xmlEscape(value: String): String {
+    return value
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
+}
+
+private fun excelColumn(index: Int): String {
+    var number = index + 1
+    val result = StringBuilder()
+
+    while (number > 0) {
+        val remainder = (number - 1) % 26
+        result.insert(0, ('A'.code + remainder).toChar())
+        number = (number - 1) / 26
+    }
+
+    return result.toString()
+}
+
+private fun excelCell(
+    reference: String,
+    value: String
+): String {
+    val safe = xmlEscape(value)
+    return """
+        <c r="$reference" t="inlineStr">
+          <is><t xml:space="preserve">$safe</t></is>
+        </c>
+    """.trimIndent()
+}
+
+private fun writeZipEntry(
+    zip: ZipOutputStream,
+    name: String,
+    content: String
+) {
+    zip.putNextEntry(ZipEntry(name))
+    zip.write(content.toByteArray(Charsets.UTF_8))
+    zip.closeEntry()
+}
+
+private fun writeXlsx(
+    output: OutputStream,
+    contacts: List<Contact>
+) {
+    ZipOutputStream(output).use { zip ->
+
+        val contentTypes = """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+              <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+            </Types>
+        """.trimIndent()
+
+        val rootRels = """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+                Target="xl/workbook.xml"/>
+            </Relationships>
+        """.trimIndent()
+
+        val workbook = """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+              xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets>
+                <sheet name="Contacts" sheetId="1" r:id="rId1"/>
+              </sheets>
+            </workbook>
+        """.trimIndent()
+
+        val workbookRels = """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+                Target="worksheets/sheet1.xml"/>
+            </Relationships>
+        """.trimIndent()
+
+        val rows = StringBuilder()
+        rows.append("<row r=\"1\">")
+        rows.append(excelCell("A1", "Name"))
+        rows.append(excelCell("B1", "Phone"))
+        rows.append("</row>")
+
+        var rowNumber = 2
+
+        contacts.forEach { contact ->
+            if (contact.phones.isEmpty()) {
+                rows.append("<row r=\"$rowNumber\">")
+                rows.append(excelCell("A$rowNumber", contact.name))
+                rows.append(excelCell("B$rowNumber", ""))
+                rows.append("</row>")
+                rowNumber++
+            } else {
+                contact.phones.forEach { phone ->
+                    rows.append("<row r=\"$rowNumber\">")
+                    rows.append(excelCell("A$rowNumber", contact.name))
+                    rows.append(excelCell("B$rowNumber", phone))
+                    rows.append("</row>")
+                    rowNumber++
+                }
+            }
+        }
+
+        val lastRow = (rowNumber - 1).coerceAtLeast(1)
+        val worksheet = """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <dimension ref="A1:B$lastRow"/>
+              <sheetViews>
+                <sheetView workbookViewId="0"/>
+              </sheetViews>
+              <sheetFormatPr defaultRowHeight="18"/>
+              <cols>
+                <col min="1" max="1" width="28" customWidth="1"/>
+                <col min="2" max="2" width="22" customWidth="1"/>
+              </cols>
+              <sheetData>$rows</sheetData>
+            </worksheet>
+        """.trimIndent()
+
+        writeZipEntry(zip, "[Content_Types].xml", contentTypes)
+        writeZipEntry(zip, "_rels/.rels", rootRels)
+        writeZipEntry(zip, "xl/workbook.xml", workbook)
+        writeZipEntry(zip, "xl/_rels/workbook.xml.rels", workbookRels)
+        writeZipEntry(zip, "xl/worksheets/sheet1.xml", worksheet)
+    }
 }
