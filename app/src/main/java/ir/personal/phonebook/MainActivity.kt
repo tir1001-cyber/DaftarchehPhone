@@ -31,6 +31,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import java.util.zip.ZipOutputStream
 import java.util.zip.ZipEntry
 import java.util.Locale
@@ -90,8 +93,27 @@ private fun writePhonebook(
     }
 }
 
-private fun normalizePhone(phone: String): String =
-    phone.filter { it.isDigit() || it == '+' }
+private fun normalizePhone(phone: String): String {
+    val converted = phone
+        .replace('۰', '0').replace('۱', '1').replace('۲', '2')
+        .replace('۳', '3').replace('۴', '4').replace('۵', '5')
+        .replace('۶', '6').replace('۷', '7').replace('۸', '8')
+        .replace('۹', '9')
+        .replace('٠', '0').replace('١', '1').replace('٢', '2')
+        .replace('٣', '3').replace('٤', '4').replace('٥', '5')
+        .replace('٦', '6').replace('٧', '7').replace('٨', '8')
+        .replace('٩', '9')
+    return converted.filter { it.isDigit() || it == '+' }
+}
+
+private fun normalizeContactName(value: String): String =
+    value.trim()
+        .replace('ي', 'ی')
+        .replace('ك', 'ک')
+        .lowercase(Locale.ROOT)
+        .replace(Regex("[\\u064B-\\u065F\\u0670]"), "")
+        .replace(Regex("[\\u200B-\\u200D\\uFEFF]"), "")
+        .replace(Regex("\\s+"), " ")
 
 private fun splitPhones(text: String): List<String> =
     text.split('\n', ',', ';', '|')
@@ -105,27 +127,29 @@ private fun mergeDuplicates(input: List<Contact>): List<Contact> {
 
     while (remaining.isNotEmpty()) {
         val group = mutableListOf(remaining.removeAt(0))
+        val groupName = normalizeContactName(group.first().name)
         var changed: Boolean
 
         do {
             changed = false
-
-            val numbers = group.flatMap { it.phones }
-                .map { normalizePhone(it) }
+            val groupNumbers = group.flatMap { it.phones }
+                .map(::normalizePhone)
                 .filter { it.isNotBlank() }
                 .toSet()
 
             val iterator = remaining.iterator()
-
             while (iterator.hasNext()) {
                 val candidate = iterator.next()
-
                 val candidateNumbers = candidate.phones
-                    .map { normalizePhone(it) }
+                    .map(::normalizePhone)
                     .filter { it.isNotBlank() }
                     .toSet()
 
-                if (numbers.intersect(candidateNumbers).isNotEmpty()) {
+                val sameName = normalizeContactName(candidate.name) == groupName
+                val samePhone = groupNumbers.intersect(candidateNumbers).isNotEmpty()
+
+                // Merge only when BOTH the normalized name and a phone number match.
+                if (sameName && samePhone) {
                     group.add(candidate)
                     iterator.remove()
                     changed = true
@@ -134,10 +158,8 @@ private fun mergeDuplicates(input: List<Contact>): List<Contact> {
         } while (changed)
 
         val first = group.first()
-
         val phones = group.flatMap { it.phones }
-            .distinctBy { normalizePhone(it) }
-
+            .distinctBy(::normalizePhone)
         result.add(first.copy(phones = phones))
     }
 
@@ -242,55 +264,135 @@ private fun exportVcf(contacts: List<Contact>): String {
     return output.toString()
 }
 
+private fun decodeVcfValue(value: String, parameters: String): String {
+    val quotedPrintable = parameters.contains("QUOTED-PRINTABLE", ignoreCase = true) ||
+        parameters.contains("ENCODING=QP", ignoreCase = true)
+    val charsetName = Regex("CHARSET\\s*=\\s*\\"?([^;:\\"]+)", RegexOption.IGNORE_CASE)
+        .find(parameters)?.groupValues?.getOrNull(1) ?: "UTF-8"
+
+    val decoded = if (quotedPrintable) decodeQuotedPrintable(value, charsetName) else value
+    return decoded
+        .replace("\\\\n", "\n", ignoreCase = true)
+        .replace("\\\\,", ",")
+        .replace("\\\\;", ";")
+        .replace("\\\\\\\\", "\\\\")
+}
+
+private fun decodeQuotedPrintable(value: String, charsetName: String): String {
+    val charset = runCatching { Charset.forName(charsetName) }.getOrDefault(Charsets.UTF_8)
+    val output = ByteArrayOutputStream()
+    var index = 0
+
+    while (index < value.length) {
+        if (value[index] == '=' && index + 2 < value.length) {
+            val high = value[index + 1].digitToIntOrNull(16)
+            val low = value[index + 2].digitToIntOrNull(16)
+            if (high != null && low != null) {
+                output.write((high shl 4) or low)
+                index += 3
+                continue
+            }
+        }
+
+        output.write(value[index].toString().toByteArray(charset))
+        index++
+    }
+
+    return String(output.toByteArray(), charset)
+}
+
+private fun decodeImportBytes(bytes: ByteArray): String {
+    if (bytes.size >= 3 &&
+        bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()
+    ) {
+        return String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+    }
+    if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+        return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+    }
+    if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+        return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+    }
+
+    // Detect common BOM-less UTF-16 exports (many spreadsheet/contact apps use these).
+    val sample = minOf(bytes.size, 200)
+    var evenZeros = 0
+    var oddZeros = 0
+    for (i in 0 until sample) {
+        if (bytes[i] == 0.toByte()) {
+            if (i % 2 == 0) evenZeros++ else oddZeros++
+        }
+    }
+    if (oddZeros > sample / 8 && oddZeros > evenZeros * 2) {
+        return String(bytes, Charsets.UTF_16LE)
+    }
+    if (evenZeros > sample / 8 && evenZeros > oddZeros * 2) {
+        return String(bytes, Charsets.UTF_16BE)
+    }
+
+    val utf8 = runCatching {
+        Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(java.nio.ByteBuffer.wrap(bytes))
+            .toString()
+    }
+    return utf8.getOrElse {
+        // Legacy Persian Windows exports are commonly encoded as Windows-1256.
+        String(bytes, Charset.forName("windows-1256"))
+    }
+}
+
 private fun parseVcf(text: String): List<Contact> {
-    val unfolded = text.replace("\r\n ", "")
-        .replace("\n ", "")
+    val unfolded = text
+        .replace("=\\r\\n", "")
+        .replace("=\\n", "")
+        .replace("\\r\\n ", "")
+        .replace("\\n ", "")
 
     val result = mutableListOf<Contact>()
-
     var name = ""
     var phones = mutableListOf<String>()
+    var insideCard = false
 
-    unfolded.lines().forEach { line ->
+    unfolded.lines().forEach { rawLine ->
+        val line = rawLine.trimEnd('\\r')
         when {
-            line.startsWith("BEGIN:VCARD", true) -> {
+            line.equals("BEGIN:VCARD", ignoreCase = true) -> {
+                insideCard = true
                 name = ""
                 phones = mutableListOf()
             }
-
-            line.startsWith("FN:", true) -> {
-                name = line.substringAfter(":")
-                    .replace("\\n", "\n")
-                    .replace("\\,", ",")
+            line.equals("END:VCARD", ignoreCase = true) -> {
+                if (insideCard && name.isNotBlank() && phones.isNotEmpty()) {
+                    result.add(Contact(name = name.trim(), phones = phones.distinctBy(::normalizePhone)))
+                }
+                insideCard = false
             }
+            insideCard && line.contains(':') -> {
+                val colon = line.indexOf(':')
+                val property = line.substring(0, colon)
+                val parameters = property.substringAfter(';', "")
+                val propertyName = property.substringBefore(';')
+                    .substringAfterLast('.')
+                    .uppercase(Locale.ROOT)
+                val rawValue = line.substring(colon + 1)
+                val value = decodeVcfValue(rawValue, parameters)
 
-            line.startsWith("N:", true) && name.isBlank() -> {
-                val parts = line.substringAfter(":").split(";")
-
-                name = parts.reversed()
-                    .filter { it.isNotBlank() }
-                    .joinToString(" ")
-            }
-
-            line.startsWith("TEL", true) && line.contains(":") -> {
-                val phone = line.substringAfter(":").trim()
-
-                if (phone.isNotBlank()) phones.add(phone)
-            }
-
-            line.startsWith("END:VCARD", true) -> {
-                if (name.isNotBlank() && phones.isNotEmpty()) {
-                    result.add(
-                        Contact(
-                            name = name,
-                            phones = phones.distinct()
-                        )
-                    )
+                when (propertyName) {
+                    "FN" -> name = value
+                    "N" -> if (name.isBlank()) {
+                        val parts = value.split(';')
+                        name = listOf(
+                            parts.getOrNull(1), parts.getOrNull(0),
+                            parts.getOrNull(2), parts.getOrNull(3), parts.getOrNull(4)
+                        ).filterNotNull().filter { it.isNotBlank() }.joinToString(" ")
+                    }
+                    "TEL" -> if (value.isNotBlank()) phones.add(value.trim())
                 }
             }
         }
     }
-
     return result
 }
 
@@ -401,9 +503,10 @@ fun PhonebookApp() {
     ) { uri: Uri? ->
         if (uri != null) {
             try {
-                val text = context.contentResolver.openInputStream(uri)
-                    ?.bufferedReader(Charsets.UTF_8)
-                    ?.use { it.readText() }
+                val bytes = context.contentResolver.openInputStream(uri)
+                    ?.use { it.readBytes() }
+                    ?: throw IllegalStateException("فایل قابل خواندن نیست")
+                val text = decodeImportBytes(bytes)
 
                 if (text == null) {
                     message = "خواندن فایل ناموفق بود."
@@ -797,9 +900,9 @@ fun PhonebookApp() {
             text = {
                 Text(
                     if (removedCount > 0)
-                        "$removedCount مخاطب تکراری شناسایی شد. ادغام انجام شود؟"
+                        "$removedCount مخاطب با نام و شماره تلفن یکسان شناسایی شد. ادغام انجام شود؟"
                     else
-                        "مخاطب تکراری بر اساس شماره تلفن مشترک پیدا نشد."
+                        "مخاطب تکراری با نام و شماره تلفن یکسان پیدا نشد."
                 )
             },
             confirmButton = {
