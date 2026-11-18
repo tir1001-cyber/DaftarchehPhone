@@ -267,15 +267,15 @@ private fun exportVcf(contacts: List<Contact>): String {
 private fun decodeVcfValue(value: String, parameters: String): String {
     val quotedPrintable = parameters.contains("QUOTED-PRINTABLE", ignoreCase = true) ||
         parameters.contains("ENCODING=QP", ignoreCase = true)
-    val charsetName = Regex("CHARSET\\s*=\\s*\\"?([^;:\\"]+)", RegexOption.IGNORE_CASE)
+    val charsetName = Regex("""CHARSET\s*=\s*"?([^;:"]+)""", RegexOption.IGNORE_CASE)
         .find(parameters)?.groupValues?.getOrNull(1) ?: "UTF-8"
 
     val decoded = if (quotedPrintable) decodeQuotedPrintable(value, charsetName) else value
     return decoded
-        .replace("\\\\n", "\n", ignoreCase = true)
-        .replace("\\\\,", ",")
-        .replace("\\\\;", ";")
-        .replace("\\\\\\\\", "\\\\")
+        .replace("\\n", "\n", ignoreCase = true)
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
 }
 
 private fun decodeQuotedPrintable(value: String, charsetName: String): String {
@@ -344,19 +344,22 @@ private fun decodeImportBytes(bytes: ByteArray): String {
 }
 
 private fun parseVcf(text: String): List<Contact> {
+    // vCard 2.1 quoted-printable soft line breaks and standard folded lines.
     val unfolded = text
-        .replace("=\\r\\n", "")
-        .replace("=\\n", "")
-        .replace("\\r\\n ", "")
-        .replace("\\n ", "")
+        .replace("=\r\n", "")
+        .replace("=\n", "")
+        .replace("\r\n ", "")
+        .replace("\n ", "")
+        .replace("\r\n\t", "")
+        .replace("\n\t", "")
 
     val result = mutableListOf<Contact>()
     var name = ""
     var phones = mutableListOf<String>()
     var insideCard = false
 
-    unfolded.lines().forEach { rawLine ->
-        val line = rawLine.trimEnd('\\r')
+    unfolded.lineSequence().forEach { rawLine ->
+        val line = rawLine.trimEnd('\r')
         when {
             line.equals("BEGIN:VCARD", ignoreCase = true) -> {
                 insideCard = true
