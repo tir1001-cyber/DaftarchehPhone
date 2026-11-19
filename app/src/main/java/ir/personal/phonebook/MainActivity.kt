@@ -670,12 +670,14 @@ fun PhonebookApp() {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
                         context.contentResolver.openOutputStream(uri)?.use {
-                            it.write(byteArrayOf(0xFF.toByte(), 0xFE.toByte()))
-                            it.write(exportCsv(snapshot).toByteArray(Charsets.UTF_16LE))
+                            // UTF-8 BOM is recognized by modern Excel and avoids
+                            // UTF-16LE being misread as single-byte text (e.g. Persian + control chars).
+                            it.write(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()))
+                            it.write(exportCsv(snapshot).toByteArray(Charsets.UTF_8))
                         } ?: error("فایل خروجی باز نشد.")
                     }
                 }
-                message = if (result.isSuccess) "فایل CSV سازگار با Excel ذخیره شد."
+                message = if (result.isSuccess) "فایل CSV با کدگذاری UTF-8 و سازگار با Excel ذخیره شد."
                 else "ذخیره فایل ناموفق بود."
             }
         }
