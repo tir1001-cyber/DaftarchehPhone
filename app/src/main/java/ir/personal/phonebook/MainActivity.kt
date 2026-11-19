@@ -216,7 +216,9 @@ private fun exportCsv(contacts: List<Contact>): String {
         lines.add(fields.joinToString(","))
     }
 
-    return "\uFEFF" + lines.joinToString("\r\n")
+    // Excel's sep= directive forces comma-delimited columns even when the
+    // device's regional list separator is semicolon or another character.
+    return "\uFEFF" + "sep=,\r\n" + lines.join("\r\n")
 }
 
 private fun parseCsv(text: String): List<Contact> {
@@ -266,7 +268,10 @@ private fun parseCsv(text: String): List<Contact> {
 
     if (row.any { it.isNotBlank() }) rows.add(row)
 
-    return rows.drop(1).mapNotNull { columns ->
+    // Excel may prepend the optional sep=, directive before the header.
+    val firstDataRow = if (rows.firstOrNull()?.firstOrNull()?.trim()?.startsWith("sep=") == true) 2 else 1
+
+    return rows.drop(firstDataRow).mapNotNull { columns ->
         if (columns.size < 2) return@mapNotNull null
 
         val name = columns[0].trim()
