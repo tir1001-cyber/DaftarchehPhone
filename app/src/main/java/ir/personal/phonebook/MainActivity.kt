@@ -198,11 +198,13 @@ private fun csvEscape(value: String): String =
 private fun exportCsv(contacts: List<Contact>): String {
     val lines = mutableListOf("نام,شماره‌ها")
 
-    contacts.forEach {
-        lines.add(
-            csvEscape(it.name) + "," +
-                csvEscape(it.phones.joinToString(" | "))
-        )
+    contacts.forEach { contact ->
+        // CSV has no native cell types. Excel otherwise guesses that phone
+        // numbers are numeric, removes leading zeroes and shows E notation.
+        // The formula returns a text value while preserving the exact phone.
+        val phoneText = contact.phones.joinToString(" | ")
+        val excelText = "=\"" + phoneText.replace("\"", "\"\"") + "\""
+        lines.add(csvEscape(contact.name) + "," + csvEscape(excelText))
     }
 
     return "\uFEFF" + lines.joinToString("\r\n")
@@ -259,7 +261,12 @@ private fun parseCsv(text: String): List<Contact> {
         if (columns.size < 2) return@mapNotNull null
 
         val name = columns[0].trim()
-        val phones = splitPhones(columns[1])
+        val phoneCell = columns[1].trim()
+        // Undo the Excel-compatible text formula written by exportCsv().
+        val plainPhoneText = if (phoneCell.startsWith("=\"") && phoneCell.endsWith("\"")) {
+            phoneCell.substring(2, phoneCell.length - 1).replace("\"\"", "\"")
+        } else phoneCell
+        val phones = splitPhones(plainPhoneText)
 
         if (name.isBlank() || phones.isEmpty()) null
         else Contact(name = name, phones = phones)
@@ -1354,9 +1361,8 @@ private fun writeZipEntry(zip: ZipOutputStream, name: String, content: String) {
 }
 
 private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
-    // Build a complete, conventional OOXML package (including styles and
-    // document properties) instead of the previous minimal workbook. Excel
-    // is stricter than some previewers about package relationships/parts.
+    // One spreadsheet row per contact. Phone numbers are separate text cells
+    // on that same row, so multi-number contacts never inflate contact count.
     ZipOutputStream(output).use { zip ->
         val contentTypes = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -1410,32 +1416,39 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
   <Application>Personal Phonebook</Application>
 </Properties>"""
 
+        val maxPhones = maxOf(1, contacts.maxOfOrNull { it.phones.size } ?: 0)
+        require(maxPhones <= 16383) { "تعداد ستون‌های شماره تلفن از ظرفیت Excel بیشتر است." }
+        val lastColumn = excelColumn(maxPhones)
         val rows = StringBuilder()
+
         rows.append("<row r=\"1\">")
         rows.append(excelCell("A1", "نام"))
-        rows.append(excelCell("B1", "شماره تلفن"))
+        for (phoneIndex in 0 until maxPhones) {
+            val column = excelColumn(phoneIndex + 1)
+            rows.append(excelCell("${column}1", "شماره ${phoneIndex + 1}"))
+        }
         rows.append("</row>")
 
-        var rowNumber = 2
-        contacts.forEach { contact ->
-            val phones = contact.phones.ifEmpty { listOf("") }
-            phones.forEach { phone ->
-                require(rowNumber <= 1_048_576) { "تعداد ردیف‌ها از ظرفیت Excel بیشتر است." }
-                rows.append("<row r=\"$rowNumber\">")
-                rows.append(excelCell("A$rowNumber", contact.name))
-                rows.append(excelCell("B$rowNumber", phone))
-                rows.append("</row>")
-                rowNumber++
+        contacts.forEachIndexed { contactIndex, contact ->
+            val rowNumber = contactIndex + 2
+            require(rowNumber <= 1_048_576) { "تعداد ردیف‌ها از ظرفیت Excel بیشتر است." }
+            rows.append("<row r=\"$rowNumber\">")
+            rows.append(excelCell("A$rowNumber", contact.name))
+            contact.phones.forEachIndexed { phoneIndex, phone ->
+                val column = excelColumn(phoneIndex + 1)
+                // inlineStr makes Excel treat +98... and leading zeroes as text.
+                rows.append(excelCell("$column$rowNumber", phone))
             }
+            rows.append("</row>")
         }
 
-        val lastRow = (rowNumber - 1).coerceAtLeast(1)
+        val lastRow = (contacts.size + 1).coerceAtLeast(1)
         val worksheet = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <dimension ref="A1:B$lastRow"/>
+  <dimension ref="A1:${lastColumn}$lastRow"/>
   <sheetViews><sheetView workbookViewId="0" rightToLeft="1"/></sheetViews>
   <sheetFormatPr defaultRowHeight="18"/>
-  <cols><col min="1" max="1" width="28" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/></cols>
+  <cols><col min="1" max="1" width="28" customWidth="1"/><col min="2" max="${maxPhones + 1}" width="22" customWidth="1"/></cols>
   <sheetData>$rows</sheetData>
   <pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>
 </worksheet>"""
