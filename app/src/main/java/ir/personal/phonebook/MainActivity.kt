@@ -439,16 +439,17 @@ fun PhonebookApp() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    val initial = remember {
-        runCatching { readPhonebook(context) }
-    }
+    var data by remember { mutableStateOf(PhonebookData()) }
+    var storageError by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(true) }
 
-    var data by remember {
-        mutableStateOf(initial.getOrElse { PhonebookData() })
-    }
-
-    var storageError by remember {
-        mutableStateOf(initial.exceptionOrNull()?.message)
+    LaunchedEffect(Unit) {
+        val initial = withContext(Dispatchers.IO) {
+            runCatching { readPhonebook(context) }
+        }
+        initial.onSuccess { data = it }
+            .onFailure { storageError = it.message ?: "خطای خواندن فایل اطلاعات" }
+        loading = false
     }
 
     var message by remember { mutableStateOf("") }
@@ -486,6 +487,10 @@ fun PhonebookApp() {
     }
 
     fun save(next: PhonebookData) {
+        if (loading) {
+            message = "لطفاً تا پایان بارگذاری اطلاعات صبر کنید."
+            return
+        }
         if (storageError != null) {
             message = "خطای خواندن اطلاعات وجود دارد؛ ذخیره‌سازی متوقف شده است."
             return
@@ -686,6 +691,9 @@ fun PhonebookApp() {
                     if (showTrash) "سطل زباله" else "مخاطبین",
                     color = MaterialTheme.colorScheme.secondary
                 )
+                if (loading) {
+                    Text("در حال بارگذاری اطلاعات...")
+                }
 
                 Spacer(Modifier.height(10.dp))
 
@@ -762,7 +770,7 @@ fun PhonebookApp() {
                         }
 
                         OutlinedButton(
-                            enabled = !importing,
+                            enabled = !importing && !loading,
                             onClick = {
                             importLauncher.launch(
                                 arrayOf(
@@ -1076,14 +1084,29 @@ fun PhonebookApp() {
                         TextButton(
                             onClick = {
                                 showSimChooser = false
-                                try {
-                                    val contactsToCopy = data.contacts.filter { it.id in selected }
-                                    val result = writeContactsToSim(context, contactsToCopy, target)
-                                    message = "انتقال به سیم‌کارت " + (target.slotIndex + 1) + " انجام شد: " + result.successCount + " شماره موفق، " + result.failedCount + " ناموفق."
-                                    if (result.failedCount > 0) message += " ممکن است ظرفیت یا محدودیت نام/شماره مانع بعضی موارد شده باشد."
-                                    selected = emptySet()
-                                } catch (e: Exception) {
-                                    message = "انتقال انجام نشد: " + (e.message ?: "خطای سیم‌کارت") + ". خروجی VCF راه جایگزین است."
+                                val contactsToCopy = data.contacts.filter { it.id in selected }
+                                coroutineScope.launch {
+                                    val transfer = withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            val result = writeContactsToSim(context, contactsToCopy, target)
+                                            val refreshedTargets = findAvailableSimTargets(context)
+                                            result to refreshedTargets
+                                        }
+                                    }
+                                    transfer.onSuccess { (result, refreshedTargets) ->
+                                        simTargets = refreshedTargets
+                                        message = "انتقال به سیم‌کارت " + (target.slotIndex + 1) +
+                                            " انجام شد: " + result.successCount + " شماره موفق، " +
+                                            result.failedCount + " ناموفق."
+                                        if (result.failedCount > 0) {
+                                            message += " ممکن است ظرفیت یا محدودیت نام/شماره مانع بعضی موارد شده باشد."
+                                        }
+                                        message += " اگر مخاطبین در برنامه تلفن دیده نمی‌شوند، فهرست مخاطبین سیم‌کارت را دوباره باز یا تازه‌سازی کن؛ نمایش آن به گوشی و برنامه مخاطبین بستگی دارد."
+                                        selected = emptySet()
+                                    }.onFailure { error ->
+                                        message = "انتقال انجام نشد: " +
+                                            (error.message ?: "خطای سیم‌کارت") + ". خروجی VCF راه جایگزین است."
+                                    }
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()
