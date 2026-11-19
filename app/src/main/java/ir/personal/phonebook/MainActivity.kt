@@ -40,6 +40,9 @@ import java.util.Locale
 import java.text.Collator
 import java.io.OutputStream
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Serializable
 data class Contact(
@@ -122,48 +125,69 @@ private fun splitPhones(text: String): List<String> =
         .distinctBy { normalizePhone(it) }
 
 private fun mergeDuplicates(input: List<Contact>): List<Contact> {
-    val remaining = input.toMutableList()
-    val result = mutableListOf<Contact>()
+    if (input.size < 2) return input
 
-    while (remaining.isNotEmpty()) {
-        val group = mutableListOf(remaining.removeAt(0))
-        val groupName = normalizeContactName(group.first().name)
-        var changed: Boolean
+    // Union-find over contacts. A contact joins another only through a shared
+    // normalized phone AND the same normalized name. This is near-linear in
+    // the number of phone entries and avoids repeated full-list scans.
+    val parent = IntArray(input.size) { it }
+    val rank = ByteArray(input.size)
 
-        do {
-            changed = false
-            val groupNumbers = group.flatMap { it.phones }
-                .map(::normalizePhone)
-                .filter { it.isNotBlank() }
-                .toSet()
-
-            val iterator = remaining.iterator()
-            while (iterator.hasNext()) {
-                val candidate = iterator.next()
-                val candidateNumbers = candidate.phones
-                    .map(::normalizePhone)
-                    .filter { it.isNotBlank() }
-                    .toSet()
-
-                val sameName = normalizeContactName(candidate.name) == groupName
-                val samePhone = groupNumbers.intersect(candidateNumbers).isNotEmpty()
-
-                // Merge only when BOTH the normalized name and a phone number match.
-                if (sameName && samePhone) {
-                    group.add(candidate)
-                    iterator.remove()
-                    changed = true
-                }
-            }
-        } while (changed)
-
-        val first = group.first()
-        val phones = group.flatMap { it.phones }
-            .distinctBy(::normalizePhone)
-        result.add(first.copy(phones = phones))
+    fun find(value: Int): Int {
+        var node = value
+        while (parent[node] != node) {
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        }
+        return node
     }
 
-    return result
+    fun union(first: Int, second: Int) {
+        var a = find(first)
+        var b = find(second)
+        if (a == b) return
+        if (rank[a] < rank[b]) {
+            val swap = a
+            a = b
+            b = swap
+        }
+        parent[b] = a
+        if (rank[a] == rank[b]) rank[a] = (rank[a] + 1).toByte()
+    }
+
+    val ownerByNameAndPhone = HashMap<String, Int>()
+    input.forEachIndexed { index, contact ->
+        val normalizedName = normalizeContactName(contact.name)
+        if (normalizedName.isBlank()) return@forEachIndexed
+        contact.phones.asSequence()
+            .map(::normalizePhone)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .forEach { phone ->
+                val key = normalizedName + "\u0000" + phone
+                val previous = ownerByNameAndPhone.putIfAbsent(key, index)
+                if (previous != null) union(index, previous)
+            }
+    }
+
+    val groups = LinkedHashMap<Int, MutableList<Contact>>()
+    input.indices.forEach { index ->
+        groups.getOrPut(find(index)) { mutableListOf() }.add(input[index])
+    }
+
+    return groups.values.map { group ->
+        if (group.size == 1) group.first()
+        else {
+            val mergedPhones = LinkedHashMap<String, String>()
+            group.forEach { contact ->
+                contact.phones.forEach { phone ->
+                    val key = normalizePhone(phone)
+                    if (key.isNotBlank()) mergedPhones.putIfAbsent(key, phone)
+                }
+            }
+            group.first().copy(phones = mergedPhones.values.toList())
+        }
+    }
 }
 
 private fun csvEscape(value: String): String =
@@ -413,6 +437,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun PhonebookApp() {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
     val initial = remember {
         runCatching { readPhonebook(context) }
@@ -501,23 +526,44 @@ fun PhonebookApp() {
         }
     }
 
+    var importing by remember { mutableStateOf(false) }
+
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
-                val bytes = context.contentResolver.openInputStream(uri)
-                    ?.use { it.readBytes() }
-                    ?: throw IllegalStateException("فایل قابل خواندن نیست")
-                val text = decodeImportBytes(bytes)
-
-                if (text == null) {
-                    message = "خواندن فایل ناموفق بود."
-                } else {
-                    importText(text)
+            coroutineScope.launch {
+                importing = true
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val bytes = context.contentResolver.openInputStream(uri)
+                            ?.use { readBytesLimited(it) }
+                            ?: throw IllegalStateException("فایل قابل خواندن نیست")
+                        val excelContacts = parseExcelContacts(bytes)
+                        if (excelContacts != null) {
+                            excelContacts
+                        } else {
+                            val text = decodeImportBytes(bytes)
+                            when {
+                                text.trimStart().startsWith("{") ->
+                                    appJson.decodeFromString<PhonebookData>(text).contacts
+                                text.contains("BEGIN:VCARD", true) -> parseVcf(text)
+                                else -> parseCsv(text)
+                            }
+                        }
+                    }
                 }
-            } catch (e: Exception) {
-                message = "خطا در خواندن فایل."
+                result.onSuccess { imported ->
+                    if (imported.isEmpty()) {
+                        message = "مخاطبی برای ورود پیدا نشد."
+                    } else {
+                        save(data.copy(contacts = data.contacts + imported))
+                        message = "${imported.size} مخاطب به فهرست فعلی اضافه شد؛ اطلاعات قبلی حذف نشد."
+                    }
+                }.onFailure { error ->
+                    message = "ورود فایل ناموفق بود: ${error.message ?: "قالب فایل پشتیبانی نمی‌شود."}"
+                }
+                importing = false
             }
         }
     }
@@ -597,12 +643,19 @@ fun PhonebookApp() {
         }
     }
 
-    val allItems = if (showTrash) data.trash else data.contacts
+    var visible by remember { mutableStateOf<List<Contact>>(emptyList()) }
 
-    val visible = sortContactsAlphabetically(allItems.filter {
-        it.name.contains(search, ignoreCase = true) ||
-            it.phones.any { phone -> phone.contains(search) }
-    })
+    LaunchedEffect(data.contacts, data.trash, search, showTrash) {
+        val source = if (showTrash) data.trash else data.contacts
+        val query = search.trim()
+        visible = withContext(Dispatchers.Default) {
+            val filtered = if (query.isBlank()) source else source.filter { contact ->
+                contact.name.contains(query, ignoreCase = true) ||
+                    contact.phones.any { phone -> phone.contains(query) }
+            }
+            sortContactsAlphabetically(filtered)
+        }
+    }
 
     val colors = lightColorScheme(
         primary = Color(0xFF8863B5),
@@ -708,10 +761,14 @@ fun PhonebookApp() {
                             Text("خروجی")
                         }
 
-                        OutlinedButton(onClick = {
+                        OutlinedButton(
+                            enabled = !importing,
+                            onClick = {
                             importLauncher.launch(
                                 arrayOf(
                                     "application/json",
+                                    "application/vnd.ms-excel",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     "text/vcard",
                                     "text/x-vcard",
                                     "text/csv",
@@ -720,7 +777,7 @@ fun PhonebookApp() {
                                 )
                             )
                         }) {
-                            Text("ورود فایل")
+                            Text(if (importing) "در حال ورود..." else "ورود فایل")
                         }
 
                         OutlinedButton(onClick = {
@@ -890,29 +947,35 @@ fun PhonebookApp() {
         )
     }
 
-    if (showMergeConfirm) {
-        val merged = remember(data.contacts) {
-            mergeDuplicates(data.contacts)
-        }
+    var mergedPreview by remember { mutableStateOf<List<Contact>?>(null) }
 
-        val removedCount = data.contacts.size - merged.size
+    LaunchedEffect(showMergeConfirm, data.contacts) {
+        mergedPreview = if (showMergeConfirm) {
+            withContext(Dispatchers.Default) { mergeDuplicates(data.contacts) }
+        } else null
+    }
+
+    if (showMergeConfirm) {
+        val merged = mergedPreview
+        val removedCount = merged?.let { data.contacts.size - it.size } ?: 0
 
         AlertDialog(
             onDismissRequest = { showMergeConfirm = false },
             title = { Text("ادغام مخاطبین تکراری") },
             text = {
                 Text(
-                    if (removedCount > 0)
-                        "$removedCount مخاطب با نام و شماره تلفن یکسان شناسایی شد. ادغام انجام شود؟"
-                    else
-                        "مخاطب تکراری با نام و شماره تلفن یکسان پیدا نشد."
+                    when {
+                        merged == null -> "در حال بررسی مخاطبین؛ لطفاً کمی صبر کنید..."
+                        removedCount > 0 -> "$removedCount مخاطب با نام و شماره تلفن یکسان شناسایی شد. ادغام انجام شود؟"
+                        else -> "مخاطب تکراری با نام و شماره تلفن یکسان پیدا نشد."
+                    }
                 )
             },
             confirmButton = {
                 TextButton(
-                    enabled = removedCount > 0,
+                    enabled = merged != null && removedCount > 0,
                     onClick = {
-                        save(data.copy(contacts = merged))
+                        merged?.let { save(data.copy(contacts = it)) }
                         showMergeConfirm = false
                     }
                 ) {
@@ -920,9 +983,7 @@ fun PhonebookApp() {
                 }
             },
             dismissButton = {
-                TextButton(onClick = {
-                    showMergeConfirm = false
-                }) {
+                TextButton(onClick = { showMergeConfirm = false }) {
                     Text("انصراف")
                 }
             }
