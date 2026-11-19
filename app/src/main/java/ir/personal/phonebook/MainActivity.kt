@@ -109,7 +109,7 @@ internal fun normalizePhone(phone: String): String {
     return converted.filter { it.isDigit() || it == '+' }
 }
 
-private fun normalizeContactName(value: String): String =
+internal fun normalizeContactName(value: String): String =
     value.trim()
         .replace('ي', 'ی')
         .replace('ك', 'ک')
@@ -1098,10 +1098,13 @@ fun PhonebookApp() {
                                         message = "انتقال به سیم‌کارت " + (target.slotIndex + 1) +
                                             " انجام شد: " + result.successCount + " شماره موفق، " +
                                             result.failedCount + " ناموفق."
+                                        if (result.skippedDuplicateCount > 0) {
+                                            message += " " + result.skippedDuplicateCount + " شمارهٔ تکراری از قبل روی سیم‌کارت بود و دوباره درج نشد."
+                                        }
                                         if (result.failedCount > 0) {
                                             message += " ممکن است ظرفیت یا محدودیت نام/شماره مانع بعضی موارد شده باشد."
                                         }
-                                        message += " اگر مخاطبین در برنامه تلفن دیده نمی‌شوند، فهرست مخاطبین سیم‌کارت را دوباره باز یا تازه‌سازی کن؛ نمایش آن به گوشی و برنامه مخاطبین بستگی دارد."
+                                        message += " اطلاعات قبلی حذف نشده است. اگر مخاطبین جدید در برنامه تلفن دیده نمی‌شوند، فهرست مخاطبین سیم‌کارت را دوباره باز یا تازه‌سازی کن؛ نمایش آن به گوشی و برنامه مخاطبین بستگی دارد."
                                         selected = emptySet()
                                     }.onFailure { error ->
                                         message = "انتقال انجام نشد: " +
