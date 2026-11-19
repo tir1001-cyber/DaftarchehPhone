@@ -596,17 +596,17 @@ fun PhonebookApp() {
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)!!.use {
-                    it.write(
-                        appJson.encodeToString(data)
-                            .toByteArray(Charsets.UTF_8)
-                    )
+            val snapshot = data
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use {
+                            it.write(appJson.encodeToString(snapshot).toByteArray(Charsets.UTF_8))
+                        } ?: error("فایل خروجی باز نشد.")
+                    }
                 }
-            }.onSuccess {
-                message = "فایل JSON ذخیره شد."
-            }.onFailure {
-                message = "ذخیره فایل ناموفق بود."
+                message = if (result.isSuccess) "فایل JSON ذخیره شد."
+                else "ذخیره فایل ناموفق بود."
             }
         }
     }
@@ -615,17 +615,17 @@ fun PhonebookApp() {
         ActivityResultContracts.CreateDocument("text/vcard")
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)!!.use {
-                    it.write(
-                        exportVcf(data.contacts)
-                            .toByteArray(Charsets.UTF_8)
-                    )
+            val snapshot = data.contacts
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use {
+                            it.write(exportVcf(snapshot).toByteArray(Charsets.UTF_8))
+                        } ?: error("فایل خروجی باز نشد.")
+                    }
                 }
-            }.onSuccess {
-                message = "فایل VCF ذخیره شد."
-            }.onFailure {
-                message = "ذخیره فایل ناموفق بود."
+                message = if (result.isSuccess) "فایل VCF ذخیره شد."
+                else "ذخیره فایل ناموفق بود."
             }
         }
     }
@@ -634,17 +634,17 @@ fun PhonebookApp() {
         ActivityResultContracts.CreateDocument("text/csv")
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)!!.use {
-                    it.write(
-                        exportCsv(data.contacts)
-                            .toByteArray(Charsets.UTF_8)
-                    )
+            val snapshot = data.contacts
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use {
+                            it.write(exportCsv(snapshot).toByteArray(Charsets.UTF_8))
+                        } ?: error("فایل خروجی باز نشد.")
+                    }
                 }
-            }.onSuccess {
-                message = "فایل CSV سازگار با Excel ذخیره شد."
-            }.onFailure {
-                message = "ذخیره فایل ناموفق بود."
+                message = if (result.isSuccess) "فایل CSV سازگار با Excel ذخیره شد."
+                else "ذخیره فایل ناموفق بود."
             }
         }
     }
@@ -655,14 +655,19 @@ fun PhonebookApp() {
         )
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { output ->
-                    writeXlsx(output, sortContactsAlphabetically(data.contacts))
-                } ?: error("فایل خروجی باز نشد.")
-            }.onSuccess {
-                message = "فایل Excel با فرمت XLSX ذخیره شد."
-            }.onFailure {
-                message = "خطا در ساخت فایل XLSX: " + (it.message ?: "نامشخص")
+            val snapshot = data.contacts
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use { output ->
+                            writeXlsx(output, sortContactsAlphabetically(snapshot))
+                        } ?: error("فایل خروجی باز نشد.")
+                    }
+                }
+                message = result.fold(
+                    onSuccess = { "فایل Excel با فرمت XLSX ذخیره شد." },
+                    onFailure = { "خطا در ساخت فایل XLSX: " + (it.message ?: "نامشخص") }
+                )
             }
         }
     }
