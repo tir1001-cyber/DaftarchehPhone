@@ -196,15 +196,24 @@ private fun csvEscape(value: String): String =
     "\"" + value.replace("\"", "\"\"") + "\""
 
 private fun exportCsv(contacts: List<Contact>): String {
-    val lines = mutableListOf("نام,شماره‌ها")
+    // One contact per CSV row; each phone is its own field/Excel column.
+    // Prefix each phone cell with an Excel text formula to preserve + and
+    // leading zeroes instead of allowing numeric/scientific-notation parsing.
+    val maxPhones = maxOf(1, contacts.maxOfOrNull { it.phones.size } ?: 0)
+    val header = buildList {
+        add("نام")
+        repeat(maxPhones) { index -> add("شماره ${index + 1}") }
+    }
+    val lines = mutableListOf(header.joinToString(",") { csvEscape(it) })
 
     contacts.forEach { contact ->
-        // CSV has no native cell types. Excel otherwise guesses that phone
-        // numbers are numeric, removes leading zeroes and shows E notation.
-        // The formula returns a text value while preserving the exact phone.
-        val phoneText = contact.phones.joinToString(" | ")
-        val excelText = "=\"" + phoneText.replace("\"", "\"\"") + "\""
-        lines.add(csvEscape(contact.name) + "," + csvEscape(excelText))
+        val fields = mutableListOf(csvEscape(contact.name))
+        repeat(maxPhones) { index ->
+            val phone = contact.phones.getOrNull(index).orEmpty()
+            val excelText = if (phone.isBlank()) "" else "=\"" + phone.replace("\"", "\"\"") + "\""
+            fields.add(csvEscape(excelText))
+        }
+        lines.add(fields.joinToString(","))
     }
 
     return "\uFEFF" + lines.joinToString("\r\n")
@@ -261,12 +270,15 @@ private fun parseCsv(text: String): List<Contact> {
         if (columns.size < 2) return@mapNotNull null
 
         val name = columns[0].trim()
-        val phoneCell = columns[1].trim()
-        // Undo the Excel-compatible text formula written by exportCsv().
-        val plainPhoneText = if (phoneCell.startsWith("=\"") && phoneCell.endsWith("\"")) {
-            phoneCell.substring(2, phoneCell.length - 1).replace("\"\"", "\"")
-        } else phoneCell
-        val phones = splitPhones(plainPhoneText)
+        val phones = columns.drop(1).flatMap { rawCell ->
+            val phoneCell = rawCell.trim()
+            // Undo the Excel-compatible text formula written by exportCsv().
+            val plainPhoneText = if (phoneCell.startsWith("=\"") && phoneCell.endsWith("\"")) {
+                phoneCell.substring(2, phoneCell.length - 1).replace("\"\"", "\"")
+            } else phoneCell
+            // Also accept older CSV files that packed multiple phones into one cell.
+            splitPhones(plainPhoneText)
+        }.distinctBy(::normalizePhone)
 
         if (name.isBlank() || phones.isEmpty()) null
         else Contact(name = name, phones = phones)
