@@ -1418,7 +1418,7 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
 
         val maxPhones = maxOf(1, contacts.maxOfOrNull { it.phones.size } ?: 0)
         require(maxPhones <= 16383) { "تعداد ستون‌های شماره تلفن از ظرفیت Excel بیشتر است." }
-        val lastColumn = excelColumn(maxPhones)
+        val lastColumn = excelColumn(maxPhones + 1)
         val rows = StringBuilder()
 
         rows.append("<row r=\"1\">")
