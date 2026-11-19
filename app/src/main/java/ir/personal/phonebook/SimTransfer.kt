@@ -95,7 +95,7 @@ fun writeContactsToSim(
                     }
                 }
             }
-        }
+        }.toMutableSet()
     }.getOrDefault(mutableSetOf())
 
     records.forEachIndexed { index, (name, rawPhone) ->
