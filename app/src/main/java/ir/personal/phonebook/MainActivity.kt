@@ -218,7 +218,7 @@ private fun exportCsv(contacts: List<Contact>): String {
 
     // Excel's sep= directive forces comma-delimited columns even when the
     // device's regional list separator is semicolon or another character.
-    return "\uFEFF" + "sep=,\r\n" + lines.joinToString("\r\n")
+    return "sep=,\r\n" + lines.joinToString("\r\n")
 }
 
 private fun parseCsv(text: String): List<Contact> {
@@ -670,7 +670,8 @@ fun PhonebookApp() {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
                         context.contentResolver.openOutputStream(uri)?.use {
-                            it.write(exportCsv(snapshot).toByteArray(Charsets.UTF_8))
+                            it.write(byteArrayOf(0xFF.toByte(), 0xFE.toByte()))
+                            it.write(exportCsv(snapshot).toByteArray(Charsets.UTF_16LE))
                         } ?: error("فایل خروجی باز نشد.")
                     }
                 }
