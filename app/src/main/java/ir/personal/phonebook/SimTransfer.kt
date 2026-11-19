@@ -126,6 +126,11 @@ fun writeContactsToSim(
             failed++
         }
     }
+    if (success > 0) {
+        // Notify observers that the SIM phonebook URI changed. The carrier
+        // provider/device may still refresh its visible contacts asynchronously.
+        runCatching { context.contentResolver.notifyChange(uri, null) }
+    }
     return SimTransferResult(success, failed, skippedDuplicates)
 }
 
