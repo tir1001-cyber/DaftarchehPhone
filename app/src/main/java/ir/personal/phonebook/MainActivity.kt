@@ -1367,9 +1367,10 @@ private fun excelColumn(index: Int): String {
     return result.toString()
 }
 
-private fun excelCell(reference: String, value: String): String {
+private fun excelCell(reference: String, value: String, styleId: Int = 0): String {
     val safe = xmlEscape(value.take(32767))
-    return "<c r=\"$reference\" t=\"inlineStr\"><is><t xml:space=\"preserve\">$safe</t></is></c>"
+    val style = if (styleId == 0) "" else " s=\"$styleId\""
+    return "<c r=\"$reference\"$style t=\"inlineStr\"><is><t xml:space=\"preserve\">$safe</t></is></c>"
 }
 
 private fun writeZipEntry(zip: ZipOutputStream, name: String, content: String) {
@@ -1415,11 +1416,17 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
 
         val styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fonts count="2">
+    <font><sz val="11"/><name val="Tahoma"/><family val="2"/></font>
+    <font><b/><sz val="11"/><name val="Tahoma"/><family val="2"/></font>
+  </fonts>
   <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
   <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+  <cellXfs count="2">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" vertical="center" readingOrder="2" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="right" vertical="center" readingOrder="2" wrapText="1"/></xf>
+  </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>"""
 
@@ -1440,10 +1447,10 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
         val rows = StringBuilder()
 
         rows.append("<row r=\"1\">")
-        rows.append(excelCell("A1", "نام"))
+        rows.append(excelCell("A1", "نام", 1))
         for (phoneIndex in 0 until maxPhones) {
             val column = excelColumn(phoneIndex + 1)
-            rows.append(excelCell("${column}1", "شماره ${phoneIndex + 1}"))
+            rows.append(excelCell("${column}1", "شماره ${phoneIndex + 1}", 1))
         }
         rows.append("</row>")
 
@@ -1466,7 +1473,7 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
   <dimension ref="A1:${lastColumn}$lastRow"/>
   <sheetViews><sheetView workbookViewId="0" rightToLeft="1"/></sheetViews>
   <sheetFormatPr defaultRowHeight="18"/>
-  <cols><col min="1" max="1" width="28" customWidth="1"/><col min="2" max="${maxPhones + 1}" width="22" customWidth="1"/></cols>
+  <cols><col min="1" max="1" width="30" customWidth="1"/><col min="2" max="${maxPhones + 1}" width="24" customWidth="1"/></cols>
   <sheetData>$rows</sheetData>
   <pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>
 </worksheet>"""
