@@ -195,6 +195,31 @@ private fun mergeDuplicates(input: List<Contact>): List<Contact> {
 private fun csvEscape(value: String): String =
     "\"" + value.replace("\"", "\"\"") + "\""
 
+// Repairs text that was UTF-8 encoded but mistakenly decoded as Latin-1.
+// Example: "ØµØ±..." -> Persian text. Only use the repair when a strict
+// UTF-8 round-trip yields Arabic/Persian letters; otherwise preserve input.
+private fun repairUtf8Mojibake(value: String): String {
+    if (value.none { it == 'Ø' || it == 'Ù' || it == 'Ã' || it == 'Â' || it == 'Ð' || it == 'Ñ' }) {
+        return value
+    }
+    val bytes = ByteArray(value.length)
+    for (index in value.indices) {
+        val code = value[index].code
+        if (code > 0xFF) return value
+        bytes[index] = code.toByte()
+    }
+    val decoded = runCatching {
+        Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(java.nio.ByteBuffer.wrap(bytes))
+            .toString()
+    }.getOrNull() ?: return value
+
+    val hasPersianOrArabic = decoded.any { it in '\\u0600'..'\\u06FF' || it in '\\u0750'..'\\u077F' }
+    return if (hasPersianOrArabic) decoded else value
+}
+
 private fun exportCsv(contacts: List<Contact>): String {
     // One contact per CSV row; each phone is its own field/Excel column.
     // Prefix each phone cell with an Excel text formula to preserve + and
@@ -207,7 +232,7 @@ private fun exportCsv(contacts: List<Contact>): String {
     val lines = mutableListOf(header.joinToString(",") { csvEscape(it) })
 
     contacts.forEach { contact ->
-        val fields = mutableListOf(csvEscape(contact.name))
+        val fields = mutableListOf(csvEscape(repairUtf8Mojibake(contact.name)))
         repeat(maxPhones) { index ->
             val phone = contact.phones.getOrNull(index).orEmpty()
             val excelText = if (phone.isBlank()) "" else "=\"" + phone.replace("\"", "\"\"") + "\""
@@ -274,7 +299,7 @@ private fun parseCsv(text: String): List<Contact> {
     return rows.drop(firstDataRow).mapNotNull { columns ->
         if (columns.size < 2) return@mapNotNull null
 
-        val name = columns[0].trim()
+        val name = repairUtf8Mojibake(columns[0].trim())
         val phones = columns.drop(1).flatMap { rawCell ->
             val phoneCell = rawCell.trim()
             // Undo the Excel-compatible text formula written by exportCsv().
@@ -418,7 +443,7 @@ private fun parseVcf(text: String): List<Contact> {
             }
             line.equals("END:VCARD", ignoreCase = true) -> {
                 if (insideCard && name.isNotBlank() && phones.isNotEmpty()) {
-                    result.add(Contact(name = name.trim(), phones = phones.distinctBy(::normalizePhone)))
+                    result.add(Contact(name = repairUtf8Mojibake(name.trim()), phones = phones.distinctBy(::normalizePhone)))
                 }
                 insideCard = false
             }
@@ -1460,7 +1485,7 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
             val rowNumber = contactIndex + 2
             require(rowNumber <= 1_048_576) { "تعداد ردیف‌ها از ظرفیت Excel بیشتر است." }
             rows.append("<row r=\"$rowNumber\">")
-            rows.append(excelCell("A$rowNumber", contact.name))
+            rows.append(excelCell("A$rowNumber", repairUtf8Mojibake(contact.name)))
             contact.phones.forEachIndexed { phoneIndex, phone ->
                 val column = excelColumn(phoneIndex + 1)
                 // inlineStr makes Excel treat +98... and leading zeroes as text.
