@@ -14,7 +14,8 @@ data class SimTarget(
 
 data class SimTransferResult(
     val successCount: Int,
-    val failedCount: Int
+    val failedCount: Int,
+    val skippedDuplicateCount: Int = 0
 )
 
 private fun Cursor.intValue(column: String, fallback: Int = 0): Int {
@@ -66,11 +67,36 @@ fun writeContactsToSim(
     }
     var success = 0
     var failed = 0
+    var skippedDuplicates = 0
     val free = (target.maxRecords - target.recordCount).coerceAtLeast(0)
     val uri = SimPhonebookContract.SimRecords.getContentUri(
         target.subscriptionId,
         SimPhonebookContract.ElementaryFiles.EF_ADN
     )
+
+    // Read-only duplicate check: this function never deletes SIM records.
+    val existingKeys = runCatching {
+        buildSet {
+            context.contentResolver.query(
+                uri,
+                arrayOf(
+                    SimPhonebookContract.SimRecords.NAME,
+                    SimPhonebookContract.SimRecords.PHONE_NUMBER
+                ),
+                null, null, null
+            )?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(SimPhonebookContract.SimRecords.NAME)
+                val phoneIndex = cursor.getColumnIndex(SimPhonebookContract.SimRecords.PHONE_NUMBER)
+                if (nameIndex >= 0 && phoneIndex >= 0) {
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(nameIndex).orEmpty()
+                        val phone = cursor.getString(phoneIndex).orEmpty()
+                        add(normalizeContactName(name) + "\u0000" + normalizePhoneForTransfer(phone))
+                    }
+                }
+            }
+        }
+    }.getOrDefault(mutableSetOf())
 
     records.forEachIndexed { index, (name, rawPhone) ->
         if (index >= free) {
@@ -79,18 +105,27 @@ fun writeContactsToSim(
             try {
                 val phone = normalizePhoneForTransfer(rawPhone)
                 if (phone.isBlank()) throw IllegalArgumentException("شماره نامعتبر")
-                val values = ContentValues().apply {
-                    put(SimPhonebookContract.SimRecords.PHONE_NUMBER, phone)
-                    put(SimPhonebookContract.SimRecords.NAME, name)
+                val key = normalizeContactName(name) + "\u0000" + phone
+                if (key in existingKeys) {
+                    skippedDuplicates++
+                } else {
+                    existingKeys.add(key)
+                    val values = ContentValues().apply {
+                        put(SimPhonebookContract.SimRecords.PHONE_NUMBER, phone)
+                        put(SimPhonebookContract.SimRecords.NAME, name)
+                    }
+                    val inserted = context.contentResolver.insert(uri, values)
+                    if (inserted != null) success++ else {
+                        existingKeys.remove(key)
+                        failed++
+                    }
                 }
-                val inserted = context.contentResolver.insert(uri, values)
-                if (inserted != null) success++ else failed++
             } catch (_: Exception) {
                 failed++
             }
         }
     }
-    return SimTransferResult(success, failed)
+    return SimTransferResult(success, failed, skippedDuplicates)
 }
 
 private fun normalizePhoneForTransfer(value: String): String {
