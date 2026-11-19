@@ -98,31 +98,32 @@ fun writeContactsToSim(
         }.toMutableSet()
     }.getOrDefault(mutableSetOf())
 
-    records.forEachIndexed { index, (name, rawPhone) ->
-        if (success >= free) {
-            failed++
-        } else {
-            try {
-                val phone = normalizePhoneForTransfer(rawPhone)
-                if (phone.isBlank()) throw IllegalArgumentException("شماره نامعتبر")
-                val key = normalizeContactName(name) + "\u0000" + phone
-                if (key in existingKeys) {
-                    skippedDuplicates++
-                } else {
-                    existingKeys.add(key)
-                    val values = ContentValues().apply {
-                        put(SimPhonebookContract.SimRecords.PHONE_NUMBER, phone)
-                        put(SimPhonebookContract.SimRecords.NAME, name)
-                    }
-                    val inserted = context.contentResolver.insert(uri, values)
-                    if (inserted != null) success++ else {
-                        existingKeys.remove(key)
-                        failed++
-                    }
-                }
-            } catch (_: Exception) {
+    records.forEach { (name, rawPhone) ->
+        try {
+            val phone = normalizePhoneForTransfer(rawPhone)
+            if (phone.isBlank()) throw IllegalArgumentException("شماره نامعتبر")
+            val key = normalizeContactName(name) + "\u0000" + phone
+
+            // Check duplicates before capacity: an already-present SIM entry
+            // should be reported as skipped even when the SIM is full.
+            if (key in existingKeys) {
+                skippedDuplicates++
+            } else if (success >= free) {
                 failed++
+            } else {
+                existingKeys.add(key)
+                val values = ContentValues().apply {
+                    put(SimPhonebookContract.SimRecords.PHONE_NUMBER, phone)
+                    put(SimPhonebookContract.SimRecords.NAME, name)
+                }
+                val inserted = context.contentResolver.insert(uri, values)
+                if (inserted != null) success++ else {
+                    existingKeys.remove(key)
+                    failed++
+                }
             }
+        } catch (_: Exception) {
+            failed++
         }
     }
     return SimTransferResult(success, failed, skippedDuplicates)
