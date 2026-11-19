@@ -216,7 +216,7 @@ private fun repairUtf8Mojibake(value: String): String {
             .toString()
     }.getOrNull() ?: return value
 
-    val hasPersianOrArabic = decoded.any { it in '\\u0600'..'\\u06FF' || it in '\\u0750'..'\\u077F' }
+    val hasPersianOrArabic = decoded.any { it.code in 0x0600..0x06FF || it.code in 0x0750..0x077F }
     return if (hasPersianOrArabic) decoded else value
 }
 
