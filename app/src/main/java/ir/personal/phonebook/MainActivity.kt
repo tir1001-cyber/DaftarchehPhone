@@ -504,6 +504,7 @@ fun PhonebookApp() {
         // Update the visible state immediately, then serialize disk writes on IO.
         // Mutex preserves the order of rapid edits/imports so an older snapshot
         // cannot overwrite a newer one.
+        val previousData = data
         data = next
         selected = emptySet()
         saveRevision++
@@ -519,8 +520,11 @@ fun PhonebookApp() {
             result.onSuccess {
                 if (thisRevision == saveRevision) message = "اطلاعات با موفقیت ذخیره شد."
             }.onFailure { error ->
-                storageError = error.message ?: "خطا در ذخیره اطلاعات"
-                message = "خطا در ذخیره اطلاعات؛ لطفاً از بستن برنامه تا رفع خطا خودداری کن."
+                if (thisRevision == saveRevision) {
+                    data = previousData
+                    storageError = error.message ?: "خطا در ذخیره اطلاعات"
+                    message = "ذخیره اطلاعات ناموفق بود؛ تغییر اخیر به حالت قبلی برگشت."
+                }
             }
         }
     }
