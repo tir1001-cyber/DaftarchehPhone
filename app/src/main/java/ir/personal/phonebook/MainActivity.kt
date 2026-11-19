@@ -220,32 +220,6 @@ private fun repairUtf8Mojibake(value: String): String {
     return if (hasPersianOrArabic) decoded else value
 }
 
-private fun exportCsv(contacts: List<Contact>): String {
-    // One contact per CSV row; each phone is its own field/Excel column.
-    // Prefix each phone cell with an Excel text formula to preserve + and
-    // leading zeroes instead of allowing numeric/scientific-notation parsing.
-    val maxPhones = maxOf(1, contacts.maxOfOrNull { it.phones.size } ?: 0)
-    val header = buildList {
-        add("نام")
-        repeat(maxPhones) { index -> add("شماره ${index + 1}") }
-    }
-    val lines = mutableListOf(header.joinToString(",") { csvEscape(it) })
-
-    contacts.forEach { contact ->
-        val fields = mutableListOf(csvEscape(repairUtf8Mojibake(contact.name)))
-        repeat(maxPhones) { index ->
-            val phone = contact.phones.getOrNull(index).orEmpty()
-            val excelText = if (phone.isBlank()) "" else "=\"" + phone.replace("\"", "\"\"") + "\""
-            fields.add(csvEscape(excelText))
-        }
-        lines.add(fields.joinToString(","))
-    }
-
-    // Excel's sep= directive forces comma-delimited columns even when the
-    // device's regional list separator is semicolon or another character.
-    return "sep=,\r\n" + lines.joinToString("\r\n")
-}
-
 private fun parseCsv(text: String): List<Contact> {
     val rows = mutableListOf<List<String>>()
     var row = mutableListOf<String>()
@@ -686,28 +660,6 @@ fun PhonebookApp() {
         }
     }
 
-    val csvExport = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("text/csv")
-    ) { uri ->
-        if (uri != null) {
-            val snapshot = data.contacts
-            coroutineScope.launch {
-                val result = withContext(Dispatchers.IO) {
-                    runCatching {
-                        context.contentResolver.openOutputStream(uri)?.use {
-                            // UTF-8 BOM is recognized by modern Excel and avoids
-                            // UTF-16LE being misread as single-byte text (e.g. Persian + control chars).
-                            it.write(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()))
-                            it.write(exportCsv(snapshot).toByteArray(Charsets.UTF_8))
-                        } ?: error("فایل خروجی باز نشد.")
-                    }
-                }
-                message = if (result.isSuccess) "فایل CSV با کدگذاری UTF-8 و سازگار با Excel ذخیره شد."
-                else "ذخیره فایل ناموفق بود."
-            }
-        }
-    }
-
     val xlsxExport = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1109,15 +1061,6 @@ fun PhonebookApp() {
                         Text("خروجی VCF")
                     }
 
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            showExport = false
-                            csvExport.launch("phonebook.csv")
-                        }
-                    ) {
-                        Text("CSV سازگار با Excel")
-                    }
 
                     Button(
                         modifier = Modifier.fillMaxWidth(),
@@ -1443,17 +1386,11 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
 
         val styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="2">
-    <font><sz val="11"/><name val="Tahoma"/><family val="2"/></font>
-    <font><b/><sz val="11"/><name val="Tahoma"/><family val="2"/></font>
-  </fonts>
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
   <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
   <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
   <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="2">
-    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" vertical="center" readingOrder="2" wrapText="1"/></xf>
-    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="right" vertical="center" readingOrder="2" wrapText="1"/></xf>
-  </cellXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>"""
 
@@ -1474,10 +1411,10 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
         val rows = StringBuilder()
 
         rows.append("<row r=\"1\">")
-        rows.append(excelCell("A1", "نام", 1))
+        rows.append(excelCell("A1", "نام"))
         for (phoneIndex in 0 until maxPhones) {
-            val column = excelColumn(phoneIndex + 1)
-            rows.append(excelCell("${column}1", "شماره ${phoneIndex + 1}", 1))
+            val column = excelColumn(phoneIndex + 2)
+            rows.append(excelCell("${column}1", "شماره ${phoneIndex + 1}"))
         }
         rows.append("</row>")
 
@@ -1485,9 +1422,9 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
             val rowNumber = contactIndex + 2
             require(rowNumber <= 1_048_576) { "تعداد ردیف‌ها از ظرفیت Excel بیشتر است." }
             rows.append("<row r=\"$rowNumber\">")
-            rows.append(excelCell("A$rowNumber", repairUtf8Mojibake(contact.name)))
+            rows.append(excelCell("A$rowNumber", contact.name))
             contact.phones.forEachIndexed { phoneIndex, phone ->
-                val column = excelColumn(phoneIndex + 1)
+                val column = excelColumn(phoneIndex + 2)
                 // inlineStr makes Excel treat +98... and leading zeroes as text.
                 rows.append(excelCell("$column$rowNumber", phone))
             }
@@ -1498,7 +1435,7 @@ private fun writeXlsx(output: OutputStream, contacts: List<Contact>) {
         val worksheet = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <dimension ref="A1:${lastColumn}$lastRow"/>
-  <sheetViews><sheetView workbookViewId="0" rightToLeft="1"/></sheetViews>
+  <sheetViews><sheetView workbookViewId="0"/></sheetViews>
   <sheetFormatPr defaultRowHeight="18"/>
   <cols><col min="1" max="1" width="30" customWidth="1"/><col min="2" max="${maxPhones + 1}" width="24" customWidth="1"/></cols>
   <sheetData>$rows</sheetData>
