@@ -34,4 +34,5 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("net.sourceforge.jexcelapi:jxl:2.6.12") { exclude(group = "log4j", module = "log4j") }
 }
