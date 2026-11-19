@@ -96,7 +96,7 @@ private fun writePhonebook(
     }
 }
 
-private fun normalizePhone(phone: String): String {
+internal fun normalizePhone(phone: String): String {
     val converted = phone
         .replace('۰', '0').replace('۱', '1').replace('۲', '2')
         .replace('۳', '3').replace('۴', '4').replace('۵', '5')
