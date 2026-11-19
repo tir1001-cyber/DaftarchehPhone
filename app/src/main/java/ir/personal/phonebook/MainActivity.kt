@@ -442,6 +442,7 @@ fun PhonebookApp() {
     val coroutineScope = rememberCoroutineScope()
 
     var data by remember { mutableStateOf(PhonebookData()) }
+    var persistedData by remember { mutableStateOf(PhonebookData()) }
     var storageError by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var pendingSaves by remember { mutableIntStateOf(0) }
@@ -452,8 +453,10 @@ fun PhonebookApp() {
         val initial = withContext(Dispatchers.IO) {
             runCatching { readPhonebook(context) }
         }
-        initial.onSuccess { data = it }
-            .onFailure { storageError = it.message ?: "خطای خواندن فایل اطلاعات" }
+        initial.onSuccess {
+            data = it
+            persistedData = it
+        }.onFailure { storageError = it.message ?: "خطای خواندن فایل اطلاعات" }
         loading = false
     }
 
@@ -504,7 +507,6 @@ fun PhonebookApp() {
         // Update the visible state immediately, then serialize disk writes on IO.
         // Mutex preserves the order of rapid edits/imports so an older snapshot
         // cannot overwrite a newer one.
-        val previousData = data
         data = next
         selected = emptySet()
         saveRevision++
@@ -518,12 +520,13 @@ fun PhonebookApp() {
             }
             pendingSaves = (pendingSaves - 1).coerceAtLeast(0)
             result.onSuccess {
+                persistedData = next
                 if (thisRevision == saveRevision) message = "اطلاعات با موفقیت ذخیره شد."
             }.onFailure { error ->
                 if (thisRevision == saveRevision) {
-                    data = previousData
+                    data = persistedData
                     storageError = error.message ?: "خطا در ذخیره اطلاعات"
-                    message = "ذخیره اطلاعات ناموفق بود؛ تغییر اخیر به حالت قبلی برگشت."
+                    message = "ذخیره اطلاعات ناموفق بود؛ داده‌ها به آخرین نسخهٔ ذخیره‌شده برگشتند."
                 }
             }
         }
