@@ -99,7 +99,7 @@ fun writeContactsToSim(
     }.getOrDefault(mutableSetOf())
 
     records.forEachIndexed { index, (name, rawPhone) ->
-        if (index >= free) {
+        if (success >= free) {
             failed++
         } else {
             try {
