@@ -43,6 +43,8 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Serializable
 data class Contact(
@@ -442,6 +444,9 @@ fun PhonebookApp() {
     var data by remember { mutableStateOf(PhonebookData()) }
     var storageError by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var pendingSaves by remember { mutableIntStateOf(0) }
+    var saveRevision by remember { mutableIntStateOf(0) }
+    val storageMutex = remember { Mutex() }
 
     LaunchedEffect(Unit) {
         val initial = withContext(Dispatchers.IO) {
@@ -487,22 +492,36 @@ fun PhonebookApp() {
     }
 
     fun save(next: PhonebookData) {
-        if (loading) {
-            message = "لطفاً تا پایان بارگذاری اطلاعات صبر کنید."
-            return
-        }
-        if (storageError != null) {
-            message = "خطای خواندن اطلاعات وجود دارد؛ ذخیره‌سازی متوقف شده است."
+        if (loading || storageError != null) {
+            message = if (loading) {
+                "لطفاً تا پایان بارگذاری اطلاعات صبر کنید."
+            } else {
+                "خطای خواندن اطلاعات وجود دارد؛ ذخیره‌سازی متوقف شده است."
+            }
             return
         }
 
-        try {
-            writePhonebook(context, next)
-            data = next
-            selected = emptySet()
-            message = "اطلاعات با موفقیت ذخیره شد."
-        } catch (e: Exception) {
-            message = "خطا در ذخیره اطلاعات: ${e.localizedMessage ?: "نامشخص"}"
+        // Update the visible state immediately, then serialize disk writes on IO.
+        // Mutex preserves the order of rapid edits/imports so an older snapshot
+        // cannot overwrite a newer one.
+        data = next
+        selected = emptySet()
+        saveRevision++
+        val thisRevision = saveRevision
+        pendingSaves++
+        coroutineScope.launch {
+            val result = runCatching {
+                storageMutex.withLock {
+                    withContext(Dispatchers.IO) { writePhonebook(context, next) }
+                }
+            }
+            pendingSaves = (pendingSaves - 1).coerceAtLeast(0)
+            result.onSuccess {
+                if (thisRevision == saveRevision) message = "اطلاعات با موفقیت ذخیره شد."
+            }.onFailure { error ->
+                storageError = error.message ?: "خطا در ذخیره اطلاعات"
+                message = "خطا در ذخیره اطلاعات؛ لطفاً از بستن برنامه تا رفع خطا خودداری کن."
+            }
         }
     }
 
@@ -563,7 +582,7 @@ fun PhonebookApp() {
                         message = "مخاطبی برای ورود پیدا نشد."
                     } else {
                         save(data.copy(contacts = data.contacts + imported))
-                        message = "${imported.size} مخاطب به فهرست فعلی اضافه شد؛ اطلاعات قبلی حذف نشد."
+                        message = "${imported.size} مخاطب به فهرست فعلی اضافه شد؛ اطلاعات قبلی حذف نشد. ذخیره‌سازی در پس‌زمینه انجام می‌شود."
                     }
                 }.onFailure { error ->
                     message = "ورود فایل ناموفق بود: ${error.message ?: "قالب فایل پشتیبانی نمی‌شود."}"
@@ -693,6 +712,8 @@ fun PhonebookApp() {
                 )
                 if (loading) {
                     Text("در حال بارگذاری اطلاعات...")
+                } else if (pendingSaves > 0) {
+                    Text("در حال ذخیره امن اطلاعات...")
                 }
 
                 Spacer(Modifier.height(10.dp))
