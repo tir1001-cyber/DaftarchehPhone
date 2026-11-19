@@ -218,7 +218,7 @@ private fun exportCsv(contacts: List<Contact>): String {
 
     // Excel's sep= directive forces comma-delimited columns even when the
     // device's regional list separator is semicolon or another character.
-    return "\uFEFF" + "sep=,\r\n" + lines.join("\r\n")
+    return "\uFEFF" + "sep=,\r\n" + lines.joinToString("\r\n")
 }
 
 private fun parseCsv(text: String): List<Contact> {
